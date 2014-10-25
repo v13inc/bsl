@@ -106,16 +106,12 @@ var prepend = function(word, list) { return word === '' ? list : [word].concat(l
 var splitToDel = function(w, l) { var i = l.lastIndexOf(w.substr(-1)); return [w.substr(1), l.substr(i + 1), l.substring(0, i)] };
 
 // #NotYourShield
-var tokenize = function(ns, w, l, r) { // namespace (for delim lookup), word, line, row
-  // if line (l) is empty, prepend the word (w) onto the row (r) and return it (stopping recursion);
-  // otherwise, find a tokenizing function for the current character in the given namespace (ns) (falling back to tokenize),
-  // and call it with the last char of l prepended to w, l without its last char, and the current row.
-  // We can define functions called "delimiters" that have the same signature as tokenize. These delimiters 
-  // hook into the tokenizer and let us create delimiters that handle "", (), {} and other fun things.
-  if(!l) return prepend(w, r); // stop recursion
-  var c = l.substr(-1);
-  return ( ns[c] || tokenize )(ns, c + w, trimLast(l), r); // call delimiter / tokenizer func on next character
-};
+// if line (l) is empty, prepend the word (w) onto the row (r) and return it (stopping recursion);
+// otherwise, find a tokenizing function for the current character in the given namespace (ns) (falling back to tokenize),
+// and call it with the last char of l prepended to w, l without its last char, and the current row.
+// We can define functions called "delimiters" that have the same signature as tokenize. These delimiters 
+// hook into the tokenizer and let us create delimiters that handle "", (), {} and other fun things.
+var tokenize=function(ns, w, l, r) { var c = l.substr(-1); return l ? (ns[c] || tokenize)(ns, c + w, trimLast(l), r) : prepend(w, r) }; //:D
 // parse uses tokenize to split str into lines (with the R.LD delimiter namespace), then maps tokenize on the
 // lines to split each line into words (using the R.WD delimiter namespace)
 var parse = function(str) { return map(tokenize(R.LD, '', str, []), tokenize, R.WD, '', __, []) };
