@@ -103,10 +103,7 @@ var prepend = function(word, list) { return word === '' ? list : [word].concat(l
 // very special function that's only useful for delimiters. Takes a word with a delim as the last char, and returns:
 // [wordWithoutDelimiter, substringUntilDelimiter, lineWithoutSubstringOrDelimiter]
 //var splitToDel = function(del, line) { var i = line.lastIndexOf(del); return [line.substr(i + 1), line.substring(0, i)] };
-var splitToDel = function(w, l) { 
-  var i = l.lastIndexOf(w.substr(-1)); 
-  return [w.substr(1), l.substr(i + 1), l.substring(0, i)];
-};
+var splitToDel = function(w, l) { var i = l.lastIndexOf(w.substr(-1)); return [w.substr(1), l.substr(i + 1), l.substring(0, i)] };
 
 // #NotYourShield
 var tokenize = function(ns, w, l, r) { // namespace (for delim lookup), word, line, row
