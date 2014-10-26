@@ -1,3 +1,6 @@
+var ex = module.exports;
+
+// somehow the code below inspired this whole silly mess :P
 /*
 var namespace = {
   project: function(table, keys) {
@@ -22,6 +25,8 @@ var namespace = {
 */
 
 // 
+// ( the stuff below is a sketch of what I'd like the language to look like )
+//
 // Line Delimiters:
 // - used to split lines in parser
 // Word Delimiters:
@@ -59,51 +64,52 @@ var namespace = {
 //
 //
 
+// 
 // Utils
-var __ = function(i) { return { __p__: true, __i__: i } };
-// you can use __ alone as a shorthand for the first arg
-__.__p__ = true; __.__i__ = 0;
+// =====
+//
 
 var deferEval = function(str) { return function() { eval(str) } };
 var trimLast = function(str) { return str.substring(0, str.length - 1) };
-
+// fancy mapping system with placeholders
+// __(<index>) for placeholders; __ is shorthand for __(0)
+var __ = function(i) { return { __p__: true, __i__: i } }; __.__p__ = true; __.__i__ = 0;
+// replaces any placeholders in list with values from args
 var placeholders = function(list, args) { return [].map.call(list, function(l) { return l && l.__p__ ? args[l.__i__] : l }) }
+// bind arguments to a function
+// var func = function(a, b, c, d) { return [a, b, c, d] };
+// bind(func, 'one', __(0), 'three', __(1))('two', 'four') // returns: ['one', 'two', 'three', 'four']
+var bind = function(func, args) {
+  var args = [].slice.call(arguments), func = args.shift();
+  return function() { func.apply(null, placeholders(args, arguments)) }
+}
 var map = function(list, func, args) {
   var args = [].slice.call(arguments), list = args.shift(), func = args.shift();
   return [].map.call(list, function(l) { return func.apply(l, placeholders(args, arguments)) });
 }
+// a few utils for parsing
+var prepend = function(word, list) { return word === '' ? list : [word].concat(list) };
+// very special function that's only useful for delimiters. Takes a word with a delim as the last char, and returns:
+// [wordWithoutDelimiter, substringUntilDelimiter, lineWithoutSubstringOrDelimiter]
+var splitToDel = function(w, l) { var i = l.lastIndexOf(w.substr(-1)); return [w.substr(1), l.substr(i + 1), l.substring(0, i)] };
 
+// 
+// Runtime State
+// =============
+//
 
-// runtime state
-var R = {
+var R = ex.R = {
   WD: {}, // word delimiters (for tokenizing words)
   LD: {}, // line delimiters
+  T: {}, // types
   N: {}, // namespace
   S: [] // stack
 }
 
-// split by string into lines (separated by \n and ;), then split into words (separated by spaces)
-var types = { word: 0, func: 1, deferred: 2 }; // base types (deferred is a deferred function)
-var type = function(word) { return word && word._t ? word._t : types.word }; // find type
-var define = function(word, body) { R.N[word] = func(body) }; // define a word
-var func = function(body) { body._t = types.func; return body }; // tag a JS function as a func type
-var deferred = function(body) { body._t = types.deferred; return body }; // tag a JS function as deferred
-
-var I = func(function(arg) { return arg }); // identity function
-var W = func(function(word) { return function() { R.S.push(word) } }); // wrap a word in a function, pushes it onto stack
-
 // 
 // Parsing
+// =======
 //
-// delimiters
-var delim = function(ns, del, body) { ns[del] = func(body) };
-var delims = function(ns, delims, body) { map(delims, delim, ns, __, body) };
-
-var prepend = function(word, list) { return word === '' ? list : [word].concat(list) };
-// very special function that's only useful for delimiters. Takes a word with a delim as the last char, and returns:
-// [wordWithoutDelimiter, substringUntilDelimiter, lineWithoutSubstringOrDelimiter]
-//var splitToDel = function(del, line) { var i = line.lastIndexOf(del); return [line.substr(i + 1), line.substring(0, i)] };
-var splitToDel = function(w, l) { var i = l.lastIndexOf(w.substr(-1)); return [w.substr(1), l.substr(i + 1), l.substring(0, i)] };
 
 // #NotYourShield
 // if line (l) is empty, prepend the word (w) onto the row (r) and return it (stopping recursion);
@@ -111,21 +117,48 @@ var splitToDel = function(w, l) { var i = l.lastIndexOf(w.substr(-1)); return [w
 // and call it with the last char of l prepended to w, l without its last char, and the current row.
 // We can define functions called "delimiters" that have the same signature as tokenize. These delimiters 
 // hook into the tokenizer and let us create delimiters that handle "", (), {} and other fun things.
-var tokenize=function(ns, w, l, r) { var c = l.substr(-1); return l ? (ns[c] || tokenize)(ns, c + w, trimLast(l), r) : prepend(w, r) }; //:D
+var tokenize = ex.tokenize = 
+  function(ns, w, l, r) { var c = l.substr(-1); return l ? (ns[c] || tokenize)(ns, c + w, trimLast(l), r) : prepend(w, r) }; //:D
 // parse uses tokenize to split str into lines (with the R.LD delimiter namespace), then maps tokenize on the
 // lines to split each line into words (using the R.WD delimiter namespace)
-var parse = function(str) { return map(tokenize(R.LD, '', str, []), tokenize, R.WD, '', __, []) };
+var parse = ex.parse = function(str) { return map(tokenize(R.LD, '', str, []), tokenize, R.WD, '', __, []) };
 
+// 
+// Execution
+// =========
+// exec -> execBlock -> execLine -> execWord -> lookup -> (executable function)()
+// 
 
+var lookup = ex.lookup = function(word) { var w = R.N[word] || word; return R.T[w._t || 'w'](w) };
+var execWord = ex.execWord = function(word) { lookup(word)() };
+var execLine = ex.execLine = function(line) { map(line.reverse(), execWord, __) };
+var execBlock = ex.execBlock = function(block) { map(block, execLine, __) };
+var exec = ex.exec = function(str) { execBlock(parse(str)) };
+
+// 
+// Language Definitions
+// ====================
+//
+
+// 
+// Delimiters
+// ----------
+//
+
+var delim = ex.delim = function(ns, del, body) { ns[del] = body };
+var delims = ex.delims = function(ns, delims, body) { map(delims, delim, ns, __, body) };
 // basic whitespace delimiter function
 var whitespace = function(ns, w, l, r) { return tokenize(ns, '', l, prepend(w.substr(1), r)) };
+
 delims(R.LD, ';\n\f\r', whitespace);
 delims(R.WD, ' \t\n\f\r', whitespace);
 // shorthand string definition: `my-string-shorthand => 'my string shorthand'
 delims(R.WD, '`', function(ns, w, l, r) { return whitespace(ns, w.replace(/-/g, ' '), l, r) });
+
 //
 // Quotes
-// ------
+//
+
 // this is what the state will look like when we hit a " on a line like 'one "two three"four' (the lack of space before four is a worst-case that we should handle):
 // w = 'four"'; l = 'one "two three'; r = []
 // we want the state to end up like this:
@@ -140,22 +173,32 @@ delims(R.WD, '"\'', function(ns, w, l, r) {
 
 // 
 // Blocks
-// ------
+//
 // Blocks are strings of code inside of (...), that are executed as a whole unit
 // During the parse phase, the block is parsed and an function is pushed on the stack that
 // executes the parsed code block when it is called
 //
 
 // 
-// Executing
+// Type System
+// -----------
 //
-var lookup = function(word) { var w = R.N[word] || word; return type(w) !== types.func ? W(w) : I(w) };
-var execLine = function(line) { line && line.length && ( lookup(line.pop())(), execLine(line) ) };
-var exec = function(str) { map(parse(str), execLine, __) }
+// Base types: word (w), function (f), block (b), deferred block (d)
+//
+
+var type = function(name, body) { R.T[name] = function(w) { w._t = name; return function() { body(w) } } };
+
+type('w', function(w) { R.S.push(w) }); // push words onto the stack
+type('f', function(f) { debugger; f() }); // execute JS functions
+type('b', execBlock); // execute blocks
+type('d', R.T.b); // convert deferred blocks to normal blocks
 
 // 
-// Language 
+// Built-in words
+// --------------
 //
+
+var define = function(word, body) { body._t = 'f'; R.N[word] = body }; // define a word
 
 // hack for adding JS infix operators
 var infix = function(op, type) { define(op, deferEval('R.S.push('+type+'(R.S.pop())'+op+type+'(R.S.pop()))')) };
@@ -164,42 +207,3 @@ var infixes = function(ops, type) { map(ops, infix, __, type) };
 infixes('+-*/', 'Number'); // maths
 define('clear', function() { R.S = [] });
 define('print', function() { console.log(R.S.pop()) });
-
-//
-// End Language, begin script
-//
-
-// exec stdin
-var execStdin = function() {
-  // why does node make this so hard?!
-  // I just wanna execute some stdin, geez
-  var stdin = '';
-  process.stdin.on('readable', function() {
-    var chunk = process.stdin.read();
-    if(chunk !== null) stdin += chunk;
-  });
-  process.stdin.on('end', function() {
-    exec(stdin);
-    if(R.S.length) console.log(R.S.pop());
-  });
-}
-
-var execArgs = function() { exec(process.argv.slice(2).join(' ')) };
-var repl = function() {
-  require('repl').start({ 
-    eval: function(cmd, context, filename, callback) {
-      var code = cmd.replace(/[(\)]/g, '').trim();
-      exec(code);
-      callback(null, R.S);
-    } 
-  });
-}
-
-if(process.argv.length > 2) {
-  execArgs();
-  if(R.S.length) console.log(R.S.pop());
-} else {
-  console.log(parse('1\'2 3 4\'; 5 "6 7" 8\n9 10 11 12 `hello-world'));
-  exec('print "Hello, World!" print / * 8 + 1 2 2');
-  repl();
-}
