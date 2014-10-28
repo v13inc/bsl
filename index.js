@@ -71,6 +71,7 @@ var namespace = {
 
 var deferEval = function(str) { return function() { eval(str) } };
 var trimLast = function(str) { return str.substring(0, str.length - 1) };
+var iota = function(i) { for(var j = 0, l = []; j < i; j++) l.push(j); return l };
 var ident = function(a) { return a };
 var call = function(f) { return f() };
 // fancy mapping system with placeholders
@@ -89,11 +90,16 @@ var map = function(list, func, args) {
   var args = [].slice.call(arguments), list = args.shift(), func = args.shift();
   return [].map.call(list, function(l) { return func.apply(l, placeholders(args, arguments)) });
 }
+var reduce = function(start, list, func, args) {
+  var args = [].slice.call(arguments), start = args.shift(), list = args.shift(), func = args.shift();
+  return [].reduce.call(list, function(l) { return func.apply(l, placeholders(args, arguments)) }, start);
+}
+var times = function(n, func) { map(iota(n), func, __) };
 // a few utils for parsing
 var prepend = function(word, list) { return word === '' ? list : [word].concat(list) };
 // very special function that's only useful for delimiters. Takes a word with a delim as the last char, and returns:
 // [wordWithoutDelimiter, substringUntilDelimiter, lineWithoutSubstringOrDelimiter]
-var splitToDel = function(w, l) { var i = l.lastIndexOf(w.substr(-1)); return [w.substr(1), l.substr(i + 1), l.substring(0, i)] };
+var splitToDel = function(d, w, l) { var i = l.lastIndexOf(d); return [w.substr(1), l.substr(i + 1), l.substring(0, i)] };
 
 // 
 // Runtime State
@@ -103,6 +109,7 @@ var splitToDel = function(w, l) { var i = l.lastIndexOf(w.substr(-1)); return [w
 var R = ex.R = {
   WD: {}, // word delimiters (for tokenizing words)
   LD: {}, // line delimiters
+  TD: {}, // table row delimiters (word delimiters are used for columns)
   T: {}, // types
   N: {}, // namespace
   S: [] // stack
@@ -127,6 +134,7 @@ var tokenize = ex.tokenize =
 // parse uses tokenize to split str into lines (with the R.LD delimiter namespace), then maps tokenize on the
 // lines to split each line into words (using the R.WD delimiter namespace)
 var parse = ex.parse = function(str) { return map(tokenize(R.LD, '', str, []), tokenize, R.WD, '', __, []) };
+var parseTable = ex.parseTable = function(str) { return map(tokenize(R.TD, '', str, []), tokenize, R.WD, '', __, []) };
 
 // 
 // Execution
@@ -158,6 +166,7 @@ var whitespace = function(ns, w, l, r) { return tokenize(ns, '', l, prepend(w.su
 
 delims(R.LD, ';\n\f\r', whitespace);
 delims(R.WD, ' \t\n\f\r', whitespace);
+delims(R.TD, ',\n\r\f', whitespace);
 // shorthand string definition: `my-string-shorthand => 'my string shorthand'
 //delims(R.WD, '`', function(ns, w, l, r) { return tokenize(ns, '', l, prepend(tag('s', w.substr(1).replace(/-/g, ' ')), r)) });
 // defer
@@ -174,7 +183,19 @@ delims(R.WD, '`', function(ns, w, l, r) { return tokenize(ns, '', l, prepend(def
 //
 delims(R.WD, '"\'', function(ns, w, l, r) { 
   // wsl = [wordWithoutDelimiter, substringUntilDelimiter, lineWithoutSubstringOrDelimiter]
-  var wsl = splitToDel(w, l); return tokenize(ns, wsl[0], wsl[2], prepend(tag('s', wsl[1]), prepend(wsl[0], r))) 
+  var wsl = splitToDel('"', w, l); return tokenize(ns, '', wsl[2], prepend(tag('s', wsl[1]), prepend(wsl[0], r))) 
+});
+
+// 
+// Tables
+// [`one `two `three] // [["one", "two", "three"]]
+// [1 2 3;4 5 6;7 8 9] // [[1,2,3],[4,5,6],[7,8,9]]
+//
+delims(R.WD, ']', function(ns, w, l, r) {
+  // wsl = [wordWithoutDelimiter, substringUntilDelimiter, lineWithoutSubstringOrDelimiter]
+  var wsl = splitToDel('[', w, l); 
+  var table = parseTable(wsl[1]);
+  return tokenize(ns, '', wsl[2], prepend(tag('t', table), prepend(wsl[0], r))); 
 });
 
 // 
@@ -189,7 +210,7 @@ delims(R.WD, '"\'', function(ns, w, l, r) {
 // Type System
 // -----------
 //
-// Base types (obj._t): word (w), string (s), function (f), block (b), deferred (d)
+// Base types (obj._t): word (w), deferred (d), string (s), function (f), block (b), table (t)
 // Deferred objects original type is stored in obj._d, and is restored when it is executed.
 //
 
@@ -205,11 +226,27 @@ var type = function(name, body) {
   } 
 };
 
-type('w', function(w) { R.S.push(w) }); // push words onto the stack
+type('w', R.S.push); // push words onto the stack
 type('s', R.S.push); // same as normal words, but we don't try and look them up
+type('t', R.S.push);
 type('f', call); // execute JS functions
 type('b', execBlock); // execute blocks
 type('d', function(d) { R.S.push(undefer(d)) });
+
+// 
+// Debugging, etc
+// --------------
+//
+
+var disps = ex.disps = {
+  w: function(w) { return w.toString() },
+  d: function(d) { return '`' + disp(d, d._d) },
+  s: function(s) { return '"' + s.toString().replace(/"/g, '\\"') + '"' },
+  f: function(f) { return '{}' },
+  t: function(t) { return '[' + [].map.call(t, function(r) { return [].map.call(r, function(c) { return disp(c) }).join(' ') }).join(', ') + ']' },
+}
+var disp = ex.disp = function(word, type) { return disps[type || word._t || 'w'](word) };
+var log = ex.log = function() { console.log(map(arguments, disp, __).join(' ')) };
 
 // 
 // Built-in words
@@ -217,12 +254,33 @@ type('d', function(d) { R.S.push(undefer(d)) });
 //
 
 var define = function(word, body) { body._t = 'f'; R.N[word] = body }; // define a word
+var defineArgs = function(num, word, body) {
+  define(word, function() {
+    var args = []; times(num, function() { args.push(R.S.pop()) });
+    var ret = body.apply(null, args);
+    if(ret != null) R.S.push(ret);
+  });
+}
 
 // hack for adding JS infix operators
 var infix = function(op, type) { define(op, deferEval('R.S.push('+type+'(R.S.pop())'+op+type+'(R.S.pop()))')) };
 var infixes = function(ops, type) { map(ops, infix, __, type) };
+var builtins = function(args, str, obj) { map(str.split(','), function(key) { defineArgs(args, key, obj[key]) }, __) };
+var protos = function(numArgs, str, obj) { map(str.split(','), function(key) { 
+  defineArgs(numArgs + 1, key, function() { 
+    var args = [].slice.call(arguments), o = args.shift();
+    return obj.prototype[key].apply(o, args); 
+  }) 
+}, __) };
 
-infixes('+-*/', 'Number'); // maths
+// maths
+infixes('+-*/%', 'Number');
+builtins(1, 'abs,floor,sqrt,acos,ceil,log,tan,asin,cos,max,round,atan,exp,min,sin', Math);
+builtins(2, 'pow', Math);
+protos(1, 'concat,split,charAt,indexOf,slice', String);
+define('iota', function() { map(iota(Number(R.S.pop())), R.S.push, __) });
 define('clear', function() { R.S = [] });
-define('print', function() { console.log(R.S.pop().toString()) });
-define('set', function() { R.N[R.S.pop()] = R.S.pop() });
+define('print', function() { R.S.length && log(R.S.pop()) });
+define('set', function() { R.S.length > 1 && (R.N[R.S.pop()] = R.S.pop()) });
+define('dup', function() { R.S.length && R.S.push(R.S.slice(-1)[0]) });
+define('drop', function() { R.S.pop() });
