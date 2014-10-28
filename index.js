@@ -71,6 +71,8 @@ var namespace = {
 
 var deferEval = function(str) { return function() { eval(str) } };
 var trimLast = function(str) { return str.substring(0, str.length - 1) };
+var ident = function(a) { return a };
+var call = function(f) { return f() };
 // fancy mapping system with placeholders
 // __(<index>) for placeholders; __ is shorthand for __(0)
 var __ = function(i) { return { __p__: true, __i__: i } }; __.__p__ = true; __.__i__ = 0;
@@ -106,6 +108,9 @@ var R = ex.R = {
   S: [] // stack
 }
 
+// helper for mapping to R.S.push (passing a reference to R.S.push doesn't normally work ;))
+R.S.push = function() { [].push.apply(R.S, arguments) };
+
 // 
 // Parsing
 // =======
@@ -129,7 +134,8 @@ var parse = ex.parse = function(str) { return map(tokenize(R.LD, '', str, []), t
 // exec -> execBlock -> execLine -> execWord -> lookup -> (executable function)()
 // 
 
-var lookup = ex.lookup = function(word) { var w = R.N[word] || word; return R.T[w._t || 'w'](w) };
+//var lookup = ex.lookup = function(word) { var w = R.N[word] || word; return R.T[w._t || 'w'](w) };
+var lookup = ex.lookup = function(word) { var w = word._t == 'w' && R.N[word] || word; return R.T[w._t || 'w'](w) };
 var execWord = ex.execWord = function(word) { lookup(word)() };
 var execLine = ex.execLine = function(line) { map(line.reverse(), execWord, __) };
 var execBlock = ex.execBlock = function(block) { map(block, execLine, __) };
@@ -153,7 +159,9 @@ var whitespace = function(ns, w, l, r) { return tokenize(ns, '', l, prepend(w.su
 delims(R.LD, ';\n\f\r', whitespace);
 delims(R.WD, ' \t\n\f\r', whitespace);
 // shorthand string definition: `my-string-shorthand => 'my string shorthand'
-delims(R.WD, '`', function(ns, w, l, r) { return whitespace(ns, w.replace(/-/g, ' '), l, r) });
+//delims(R.WD, '`', function(ns, w, l, r) { return tokenize(ns, '', l, prepend(tag('s', w.substr(1).replace(/-/g, ' ')), r)) });
+// defer
+delims(R.WD, '`', function(ns, w, l, r) { return tokenize(ns, '', l, prepend(defer(tag('w', w.substr(1))), r)) });
 
 //
 // Quotes
@@ -164,11 +172,9 @@ delims(R.WD, '`', function(ns, w, l, r) { return whitespace(ns, w.replace(/-/g, 
 // we want the state to end up like this:
 // w = ''; l = 'one '; r = ['two three', 'four']
 //
-delims(R.WD, '"\'', function(ns, w, l, r) {
-  // del is the current delimiter, i is the next " (remember, we are parsing right -> left, so it's the lastIndexOf l)
-  //var del = w.substr(-1), w = w.substr(1), r = prepend(w, r), i = l.lastIndexOf(del), str = l.substr(i + 1);
-  var wsl = splitToDel(w, l);
-  return tokenize(ns, wsl[0], wsl[2], prepend(wsl[1], prepend(wsl[0], r)));
+delims(R.WD, '"\'', function(ns, w, l, r) { 
+  // wsl = [wordWithoutDelimiter, substringUntilDelimiter, lineWithoutSubstringOrDelimiter]
+  var wsl = splitToDel(w, l); return tokenize(ns, wsl[0], wsl[2], prepend(tag('s', wsl[1]), prepend(wsl[0], r))) 
 });
 
 // 
@@ -183,15 +189,27 @@ delims(R.WD, '"\'', function(ns, w, l, r) {
 // Type System
 // -----------
 //
-// Base types: word (w), function (f), block (b), deferred block (d)
+// Base types (obj._t): word (w), string (s), function (f), block (b), deferred (d)
+// Deferred objects original type is stored in obj._d, and is restored when it is executed.
 //
 
-var type = function(name, body) { R.T[name] = function(w) { w._t = name; return function() { body(w) } } };
+// holy hax: this is an easy way to default to the 'w' type :D
+Object.prototype._t = 'w';
+var tag = function(type, obj) { var o = Object(obj); o._t = type; return o };
+var defer = function(obj) { obj._d = obj._t; obj._t = 'd'; return obj };
+var undefer = function(obj) { obj._t = obj._d; return obj };
+// 2x meta bonus! Adds a type and a type 'convertor' which is called when the word is evaluated
+var type = function(name, body) { 
+  R.T[name] = function(w) { 
+    return tag(name, function() { body(tag(name, w)) }); 
+  } 
+};
 
 type('w', function(w) { R.S.push(w) }); // push words onto the stack
-type('f', function(f) { debugger; f() }); // execute JS functions
+type('s', R.S.push); // same as normal words, but we don't try and look them up
+type('f', call); // execute JS functions
 type('b', execBlock); // execute blocks
-type('d', R.T.b); // convert deferred blocks to normal blocks
+type('d', function(d) { R.S.push(undefer(d)) });
 
 // 
 // Built-in words
@@ -206,4 +224,5 @@ var infixes = function(ops, type) { map(ops, infix, __, type) };
 
 infixes('+-*/', 'Number'); // maths
 define('clear', function() { R.S = [] });
-define('print', function() { console.log(R.S.pop()) });
+define('print', function() { console.log(R.S.pop().toString()) });
+define('set', function() { R.N[R.S.pop()] = R.S.pop() });
